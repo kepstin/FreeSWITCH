@@ -106,6 +106,7 @@ typedef struct oggshout_context oggshout_context_t;
 struct vorbis_codec_priv {
 	vorbis_info info;
 	vorbis_dsp_state dsp_state;
+	ogg_stream_state stream_state;
 };
 
 typedef struct vorbis_codec_priv vorbis_codec_priv_t;
@@ -127,6 +128,7 @@ static void oggshout_vorbis_encoder_destroy(oggshout_context_t *context)
 		oggshout_shout_destroy(context);
 	}
 
+	ogg_stream_clear(&codec_priv->stream_state);
 	vorbis_dsp_clear(&codec_priv->dsp_state);
 	vorbis_info_clear(&codec_priv->info);
 	free(codec_priv);
@@ -580,8 +582,18 @@ static switch_status_t shout_file_read(switch_file_handle_t *handle, void *data,
 
 static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context, void *data, size_t *len)
 {
-	int16_t audio[9600] = { 0 };
+	vorbis_codec_priv_t *codec_priv = context->codec_priv;
 	switch_size_t audio_read = 0;
+	vorbis_block block;
+	float **vorbis_buffers;
+	int samples;
+	int i = 0;
+	int16_t *sample;
+	int ret;
+	ogg_packet packet = { 0 };
+	
+	/* Each sample is two bytes, and we can have 1 or 2 channels */
+	samples = *len / 2 / context->channels;
 
 	switch_mutex_lock(context->audio_mutex);
 	if (context->audio_buffer) {
@@ -600,6 +612,59 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 		memset(audio, 0, sizeof(audio));
 	}
 
+	if (!encoder_ready) {
+		ogg_packet codec_id = { 0 };
+		ogg_packet comment = { 0 };
+		ogg_packet code = { 0 };
+
+		/* Output headers */
+		vorbis_analysis_headerout(&codec_priv->dsp_state, NULL, &codec_id, &comment, &code);
+
+		ogg_stream_packetin(codec_priv->stream_state, &codec_id);
+		ogg_stream_packetin(codec_priv->stream_state, &comment);
+		ogg_stream_packetin(codec_priv->stream_state, &code);
+
+		ogg_packet_clear(&code);
+		ogg_packet_clear(&comment);
+		ogg_packet_clear(&codec_id);
+
+		encoder_ready++;
+
+		/* Sending the ogg pages to shout will be handled by a later loop */
+	}
+
+	/* Copy the samples into the vorbis buffer, converting to float on the way */
+	vorbis_buffers = vorbis_analysis_buffer(&codec_priv->dsp_state, samples);
+	sample = data;
+	for (i = 0; i < samples; i++) {
+		int j;
+		for (j = 0; j < context->channels; j++) {
+			/*
+			 * We have to scale the integer samples in the range [-32768,32767] to the
+			 * floating point range [-1.0,1.0]. This ldexpf call performs the operation
+			 * sample / 32768.0 without actually doing a floating-point division.
+			 */
+			vorbis_buffers[j][i] = ldexpf((float) *sample++, -15);
+		}
+	}
+	vorbis_analysis_wrote(&codec_priv->dsp_state, samples);
+
+	/* Split the buffer into blocks, then analyze/encode the blocks */
+	vorbis_block_init(&codec_priv->dsp_state, &block);
+
+	do {
+		int packet_ret;
+
+		ret = vorbis_analysis_blockout(&codec_priv->dsp_state, &block);
+
+		vorbis_analysis(&block, NULL);
+		vorbis_bitrate_addblock(&block);
+
+		do {
+			packet_ret = vorbis_bitrate_flushpacket(&codec_priv->dsp_state, &packet);
+
+		} while (packet_ret);
+	} while (ret);
 
 	return SWITCH_STATUS_FALSE;
 
