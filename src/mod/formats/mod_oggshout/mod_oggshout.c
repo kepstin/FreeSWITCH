@@ -123,7 +123,30 @@ static void oggshout_vorbis_encoder_destroy(oggshout_context_t *context)
 	vorbis_codec_priv_t *codec_priv = context->codec_priv;
 
 	if (context->shout) {
-		/* TODO: Flush remaining buffered audio */
+		vorbis_block block;
+		ogg_packet packet = { 0 };
+		ogg_page page = { 0 };
+
+		/* Submit an empty buffer to indicate end of input. */
+		vorbis_analysis_wrote(&codec_priv->dsp_state, 0);
+
+		/* Flush remaining buffered audio */
+		vorbis_block_init(&codec_priv->dsp_state, &block);
+
+		while (vorbis_analysis_blockout(&codec_priv->dsp_state, &block) == 1) {
+			vorbis_analysis(&block, NULL);
+			vorbis_bitrate_addblock(&block);
+
+			while (vorbis_bitrate_flushpacket(&codec_priv->dsp_state, &packet) == 1) {
+				ogg_stream_packetin(&codec_priv->stream_state, &packet);
+				ogg_packet_clear(&packet);
+			}
+		}
+
+		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+			shout_send(context->shout, page.header, page.header_len);
+			shout_send(context->shout, page.body, page.body_len);
+		}
 
 		oggshout_shout_destroy(context);
 	}
@@ -198,6 +221,92 @@ static inline void free_context(oggshout_context_t *context)
 	}
 }
 
+static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context, void *data, size_t len)
+{
+	vorbis_codec_priv_t *codec_priv = context->codec_priv;
+	vorbis_block block;
+	float **vorbis_buffers;
+	int samples;
+	int i = 0;
+	int16_t *sample;
+	ogg_packet packet = { 0 };
+	ogg_page page = { 0 };
+	
+	/* Each sample is two bytes, and we can have 1 or 2 channels */
+	samples = len / 2 / context->channels;
+
+	if (context->err) {
+		goto error;
+	}
+
+	if (!context->encoder_ready) {
+		ogg_packet codec_id = { 0 };
+		ogg_packet comment = { 0 };
+		ogg_packet code = { 0 };
+
+		/* Output headers */
+		vorbis_analysis_headerout(&codec_priv->dsp_state, NULL, &codec_id, &comment, &code);
+
+		ogg_stream_packetin(&codec_priv->stream_state, &codec_id);
+		ogg_stream_packetin(&codec_priv->stream_state, &comment);
+		ogg_stream_packetin(&codec_priv->stream_state, &code);
+
+		ogg_packet_clear(&code);
+		ogg_packet_clear(&comment);
+		ogg_packet_clear(&codec_id);
+
+		context->encoder_ready++;
+
+		/* Sending the ogg pages to shout will be handled by a later loop */
+	}
+
+	/* Copy the samples into the vorbis buffer, converting to float on the way */
+	vorbis_buffers = vorbis_analysis_buffer(&codec_priv->dsp_state, samples);
+	sample = data;
+	for (i = 0; i < samples; i++) {
+		int j;
+		for (j = 0; j < context->channels; j++) {
+			/*
+			 * We have to scale the integer samples in the range [-32768,32767] to the
+			 * floating point range [-1.0,1.0]. This ldexpf call performs the operation
+			 * sample / 32768.0 without actually doing a floating-point division.
+			 */
+			vorbis_buffers[j][i] = ldexpf((float) *sample++, -15);
+		}
+	}
+	vorbis_analysis_wrote(&codec_priv->dsp_state, samples);
+
+	/* Split the buffer into blocks, then analyze/encode the blocks */
+	vorbis_block_init(&codec_priv->dsp_state, &block);
+
+	while (vorbis_analysis_blockout(&codec_priv->dsp_state, &block) == 1) {
+		vorbis_analysis(&block, NULL);
+		vorbis_bitrate_addblock(&block);
+
+		while (vorbis_bitrate_flushpacket(&codec_priv->dsp_state, &packet) == 1) {
+			ogg_stream_packetin(&codec_priv->stream_state, &packet);
+			ogg_packet_clear(&packet);
+		}
+	}
+
+	/* Generate the ogg packets, and send them via libshout */
+	while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+		shout_send(context->shout, page.header, page.header_len);
+		shout_send(context->shout, page.body, page.body_len);
+	}
+
+	return SWITCH_STATUS_SUCCESS;
+
+error:
+	return SWITCH_STATUS_GENERR;
+}
+
+static switch_status_t oggshout_opus_encoder_write(oggshout_context_t *context, void *data, size_t len)
+{
+	/* TODO */
+	return SWITCH_STATUS_FALSE;
+}
+
 #define error_check() if (context->err) goto error;
 
 static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, void *obj)
@@ -214,11 +323,9 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 	}
 
 	while (!context->err && context->thread_running) {
-		unsigned char mp3buf[20480] = "";
 		int16_t audio[9600] = { 0 };
 		switch_size_t audio_read = 0;
-		int rlen = 0;
-		long ret = 0;
+		switch_status_t ret = 0;
 
 		switch_mutex_lock(context->audio_mutex);
 		if (context->audio_buffer) {
@@ -232,22 +339,23 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 
 		if (!audio_read) {
 			audio_read = sizeof(audio);
-			memset(audio, 255, sizeof(audio));
+			memset(audio, 0, sizeof(audio));
 		}
 
-		if (rlen) {
-			ret = shout_send(context->shout, mp3buf, rlen);
-			if (ret != SHOUTERR_SUCCESS) {
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Send error: %s\n", shout_get_error(context->shout));
-				goto error;
-			}
-		} else {
-			memset(mp3buf, 0, 128);
-			ret = shout_send(context->shout, mp3buf, 128);
+		switch (context->codec) {
+			case OGGSHOUT_CODEC_VORBIS:
+				ret = oggshout_vorbis_encoder_write(context, audio, audio_read);
+				break;
+			case OGGSHOUT_CODEC_OPUS:
+				ret = oggshout_opus_encoder_write(context, audio, audio_read);
+				break;
+		}
+
+		if (ret != SWITCH_STATUS_SUCCESS) {
+			goto error;
 		}
 
 		shout_sync(context->shout);
-		switch_yield(100000);
 	}
 
   error:
@@ -276,8 +384,10 @@ static switch_status_t launch_write_stream_thread(oggshout_context_t *context)
 	while (context->thread_running && context->thread_running != 2) {
 		switch_yield(100000);
 		if (!--sanity)
-			break;
+			return SWITCH_STATUS_GENERR;
 	}
+
+	return SWITCH_STATUS_SUCCESS;
 }
 
 #define TC_BUFFER_SIZE 1024 * 32
@@ -580,103 +690,6 @@ static switch_status_t shout_file_read(switch_file_handle_t *handle, void *data,
 	return SWITCH_STATUS_FALSE;
 }
 
-static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context, void *data, size_t *len)
-{
-	vorbis_codec_priv_t *codec_priv = context->codec_priv;
-	switch_size_t audio_read = 0;
-	vorbis_block block;
-	float **vorbis_buffers;
-	int samples;
-	int i = 0;
-	int16_t *sample;
-	int ret;
-	ogg_packet packet = { 0 };
-	
-	/* Each sample is two bytes, and we can have 1 or 2 channels */
-	samples = *len / 2 / context->channels;
-
-	switch_mutex_lock(context->audio_mutex);
-	if (context->audio_buffer) {
-		audio_read = switch_buffer_read(context->audio_buffer, audio, sizeof (audio));
-	} else {
-		context->err++;
-	}
-	switch_mutex_unlock(context->audio_mutex);
-
-	if (context->err) {
-		goto error;
-	}
-
-	if (!audio_read) {
-		audio_read = sizeof (audio);
-		memset(audio, 0, sizeof(audio));
-	}
-
-	if (!encoder_ready) {
-		ogg_packet codec_id = { 0 };
-		ogg_packet comment = { 0 };
-		ogg_packet code = { 0 };
-
-		/* Output headers */
-		vorbis_analysis_headerout(&codec_priv->dsp_state, NULL, &codec_id, &comment, &code);
-
-		ogg_stream_packetin(codec_priv->stream_state, &codec_id);
-		ogg_stream_packetin(codec_priv->stream_state, &comment);
-		ogg_stream_packetin(codec_priv->stream_state, &code);
-
-		ogg_packet_clear(&code);
-		ogg_packet_clear(&comment);
-		ogg_packet_clear(&codec_id);
-
-		encoder_ready++;
-
-		/* Sending the ogg pages to shout will be handled by a later loop */
-	}
-
-	/* Copy the samples into the vorbis buffer, converting to float on the way */
-	vorbis_buffers = vorbis_analysis_buffer(&codec_priv->dsp_state, samples);
-	sample = data;
-	for (i = 0; i < samples; i++) {
-		int j;
-		for (j = 0; j < context->channels; j++) {
-			/*
-			 * We have to scale the integer samples in the range [-32768,32767] to the
-			 * floating point range [-1.0,1.0]. This ldexpf call performs the operation
-			 * sample / 32768.0 without actually doing a floating-point division.
-			 */
-			vorbis_buffers[j][i] = ldexpf((float) *sample++, -15);
-		}
-	}
-	vorbis_analysis_wrote(&codec_priv->dsp_state, samples);
-
-	/* Split the buffer into blocks, then analyze/encode the blocks */
-	vorbis_block_init(&codec_priv->dsp_state, &block);
-
-	do {
-		int packet_ret;
-
-		ret = vorbis_analysis_blockout(&codec_priv->dsp_state, &block);
-
-		vorbis_analysis(&block, NULL);
-		vorbis_bitrate_addblock(&block);
-
-		do {
-			packet_ret = vorbis_bitrate_flushpacket(&codec_priv->dsp_state, &packet);
-
-		} while (packet_ret);
-	} while (ret);
-
-	return SWITCH_STATUS_FALSE;
-
-error:
-	return SWITCH_STATUS_GENERR;
-}
-
-static switch_status_t oggshout_opus_encoder_write(oggshout_context_t *context, void *data, size_t *len)
-{
-	/* TODO */
-	return SWITCH_STATUS_FALSE;
-}
 
 static switch_status_t shout_file_write(switch_file_handle_t *handle, void *data, size_t *len)
 {
@@ -728,6 +741,8 @@ static switch_status_t shout_file_write(switch_file_handle_t *handle, void *data
 		handle->sample_count += *len;
 		return SWITCH_STATUS_SUCCESS;
 	}
+
+	return SWITCH_STATUS_GENERR;
 }
 
 static switch_status_t shout_file_set_string(switch_file_handle_t *handle, switch_audio_col_t col, const char *string)
