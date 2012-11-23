@@ -414,7 +414,7 @@ static switch_status_t oggshout_shout_sender_open(oggshout_context_t *context, c
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to parse host in URL\n");
 		goto error;
 	}
-	*host = '\0';
+	*host++ = '\0';
 	if (!(mount = strchr(host, '/'))) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to parse mount in URL\n");
 		goto error;
