@@ -224,6 +224,7 @@ static inline void free_context(oggshout_context_t *context)
 static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context, void *data, size_t len)
 {
 	vorbis_codec_priv_t *codec_priv = context->codec_priv;
+	vorbis_comment vc;
 	vorbis_block block;
 	float **vorbis_buffers;
 	int samples;
@@ -245,8 +246,12 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 		ogg_packet comment = { 0 };
 		ogg_packet code = { 0 };
 
+		vorbis_comment_init(&vc);
+
 		/* Output headers */
-		vorbis_analysis_headerout(&codec_priv->dsp_state, NULL, &codec_id, &comment, &code);
+		vorbis_analysis_headerout(&codec_priv->dsp_state, &vc, &codec_id, &comment, &code);
+
+		vorbis_comment_clear(&vc);
 
 		ogg_stream_packetin(&codec_priv->stream_state, &codec_id);
 		ogg_stream_packetin(&codec_priv->stream_state, &comment);
