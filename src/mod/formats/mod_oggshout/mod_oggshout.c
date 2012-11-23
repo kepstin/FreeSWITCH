@@ -437,36 +437,36 @@ static switch_status_t oggshout_shout_sender_open(oggshout_context_t *context, c
 		goto error;
 	}
 
-	if (shout_set_host(context->shout, host) != SHOUTERR_SUCCESS) {
+	if (shout_set_host(shout, host) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set hostname: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
-	if (shout_set_port(context->shout, portno) != SHOUTERR_SUCCESS) {
+	if (shout_set_port(shout, portno) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set port: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
-	if (shout_set_user(context->shout, username) != SHOUTERR_SUCCESS) {
+	if (shout_set_user(shout, username) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set username: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
-	if (shout_set_password(context->shout, password) != SHOUTERR_SUCCESS) {
+	if (shout_set_password(shout, password) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set password: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
-	if (shout_set_protocol(context->shout, SHOUT_PROTOCOL_HTTP) != SHOUTERR_SUCCESS) {
+	if (shout_set_protocol(shout, SHOUT_PROTOCOL_HTTP) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set protocol: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
-	if (shout_set_format(context->shout, SHOUT_FORMAT_OGG) != SHOUTERR_SUCCESS) {
+	if (shout_set_format(shout, SHOUT_FORMAT_OGG) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set format: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
-	if (shout_set_mount(context->shout, mount) != SHOUTERR_SUCCESS) {
+	if (shout_set_mount(shout, mount) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to set mount: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
 
-	if (shout_open(context->shout) != SHOUTERR_SUCCESS) {
+	if (shout_open(shout) != SHOUTERR_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to open shoutcast stream: %s\n", shout_get_error(context->shout));
 		goto error;
 	}
