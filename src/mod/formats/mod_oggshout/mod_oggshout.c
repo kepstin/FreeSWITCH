@@ -246,6 +246,8 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 		ogg_packet comment = { 0 };
 		ogg_packet code = { 0 };
 
+		ogg_stream_init(&codec_priv->stream_state, 0);
+
 		vorbis_comment_init(&vc);
 
 		/* Output headers */
@@ -263,7 +265,11 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 		context->encoder_ready++;
 
-		/* Sending the ogg pages to shout will be handled by a later loop */
+		/* Generate the ogg packets, and send them via libshout */
+		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+			shout_send(context->shout, page.header, page.header_len);
+			shout_send(context->shout, page.body, page.body_len);
+		}
 	}
 
 	/* Copy the samples into the vorbis buffer, converting to float on the way */
