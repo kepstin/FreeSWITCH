@@ -228,12 +228,13 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 	float **vorbis_buffers;
 	int samples;
 	int i = 0;
-	int16_t *sample;
+	int16_t *sample = data;
+	int channels = context->channels;
 	ogg_packet packet = { 0 };
 	ogg_page page = { 0 };
 	
 	/* Each sample is two bytes, and we can have 1 or 2 channels */
-	samples = len / 2 / context->channels;
+	samples = len / sizeof (int16_t) / channels;
 
 	if (context->err) {
 		goto error;
@@ -262,18 +263,18 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 	/* Copy the samples into the vorbis buffer, converting to float on the way */
 	vorbis_buffers = vorbis_analysis_buffer(&codec_priv->dsp_state, samples);
-	sample = data;
-	for (i = 0; i < samples; i++) {
-		int j;
-		for (j = 0; j < context->channels; j++) {
-			/*
-			 * We have to scale the integer samples in the range [-32768,32767] to the
-			 * floating point range [-1.0,1.0]. This ldexpf call performs the operation
-			 * sample / 32768.0 without actually doing a floating-point division.
-			 */
-			vorbis_buffers[j][i] = ldexpf((float) *sample++, -15);
+
+	if (channels == 1) {
+		for (i = 0; i < samples; i++) {
+			vorbis_buffers[0][i] = sample[i] / 32768.0f;
+		}
+	} else if (channels == 2) {
+		for (i = 0; i < samples; i++) {
+			vorbis_buffers[0][i] = sample[i*2] / 32768.0f;
+			vorbis_buffers[1][i] = sample[i*2+1] / 32768.0f;
 		}
 	}
+
 	vorbis_analysis_wrote(&codec_priv->dsp_state, samples);
 
 	/* Split the buffer into blocks, then analyze/encode the blocks */
@@ -602,6 +603,18 @@ error:
 	return SWITCH_STATUS_GENERR;
 }
 
+static int pathext(const char *path, const char *ext) {
+	int path_len, ext_len;
+
+	path_len = strlen(path);
+	ext_len = strlen(ext);
+
+	if (path_len < ext_len) {
+		return -1;
+	}
+	return strcmp(path + path_len - ext_len, ext);
+}
+
 #define MY_BUF_LEN 1024*32
 #define MY_BLOCK_SIZE MY_BUF_LEN
 static switch_status_t oggshout_file_open(switch_file_handle_t *handle, const char *path)
@@ -638,6 +651,16 @@ static switch_status_t oggshout_file_open(switch_file_handle_t *handle, const ch
 	handle->sections = 0;
 	handle->speed = 0;
 	handle->private_info = context;
+
+	/* Select the codec based off the file extension */
+	if (pathext(path, ".ogg") == 0) {
+		context->codec = OGGSHOUT_CODEC_VORBIS;
+	} else if (pathext(path, ".opus") == 0) {
+		context->codec = OGGSHOUT_CODEC_OPUS;
+	} else {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Could not determine file format from path\n");
+		goto error;
+	}
 
 	if (switch_buffer_create_dynamic(&context->audio_buffer, MY_BLOCK_SIZE, MY_BUF_LEN, 0) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Memory Error!\n");
