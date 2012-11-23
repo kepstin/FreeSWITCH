@@ -773,6 +773,8 @@ static switch_status_t shout_file_set_string(switch_file_handle_t *handle, switc
 	oggshout_context_t *context = handle->private_info;
 	switch_status_t status = SWITCH_STATUS_FALSE;
 
+	return SWITCH_STATUS_SUCCESS;
+
 	switch (col) {
 	case SWITCH_AUDIO_COL_STR_TITLE:
 		if (shout_set_name(context->shout, string) == SHOUTERR_SUCCESS) {
