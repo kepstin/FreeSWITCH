@@ -145,6 +145,7 @@ static void oggshout_vorbis_encoder_destroy(oggshout_context_t *context)
 		}
 
 		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+			shout_sync(context->shout);
 			shout_send(context->shout, page.header, page.header_len);
 			shout_send(context->shout, page.body, page.body_len);
 		}
@@ -264,6 +265,7 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 		/* Generate the ogg packets, and send them via libshout */
 		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+			shout_sync(context->shout);
 			shout_send(context->shout, page.header, page.header_len);
 			shout_send(context->shout, page.body, page.body_len);
 		}
@@ -300,6 +302,7 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 	/* Generate the ogg packets, and send them via libshout */
 	while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+		shout_sync(context->shout);
 		shout_send(context->shout, page.header, page.header_len);
 		shout_send(context->shout, page.body, page.body_len);
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Wrote an encoded page to shout\n");
@@ -366,8 +369,6 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 		if (ret != SWITCH_STATUS_SUCCESS) {
 			goto error;
 		}
-
-		shout_sync(context->shout);
 	}
 
   error:
