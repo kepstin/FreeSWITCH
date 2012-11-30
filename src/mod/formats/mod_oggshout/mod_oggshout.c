@@ -350,7 +350,6 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 		}
 		switch_mutex_unlock(context->audio_mutex);
 
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Read %ld bytes from audio buffer\n", audio_read);
 
 		error_check();
 
@@ -359,6 +358,8 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 			switch_sleep(20 * 1000); /* 20ms */
 			continue;
 		}
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Read %ld bytes from audio buffer\n", audio_read);
 
 		for (i = 0; i < (audio_read / sizeof (int16_t)); ++i) {
 			if (audio[i] != 0) {
