@@ -673,6 +673,9 @@ static switch_status_t oggshout_file_open(switch_file_handle_t *handle, const ch
 		return SWITCH_STATUS_FALSE;
 	}
 
+	/* Disable prebuffering - we have internal output buffering */
+	handle->pre_buffer_datalen = 0;
+
 	if ((context = switch_core_alloc(handle->memory_pool, sizeof(*context))) == 0) {
 		return SWITCH_STATUS_MEMERR;
 	}
