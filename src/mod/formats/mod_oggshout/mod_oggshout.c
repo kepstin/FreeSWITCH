@@ -42,6 +42,8 @@
 #include <vorbis/codec.h>
 #include <shout/shout.h>
 
+#include <stdbool.h>
+
 SWITCH_MODULE_LOAD_FUNCTION(mod_oggshout_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_oggshout_shutdown);
 SWITCH_MODULE_DEFINITION(mod_oggshout, mod_oggshout_load, mod_oggshout_shutdown, NULL);
@@ -246,8 +248,6 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 		ogg_packet comment = { 0 };
 		ogg_packet code = { 0 };
 
-		ogg_stream_init(&codec_priv->stream_state, 0);
-
 		vorbis_comment_init(&vc);
 
 		/* Output headers */
@@ -258,10 +258,6 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 		ogg_stream_packetin(&codec_priv->stream_state, &codec_id);
 		ogg_stream_packetin(&codec_priv->stream_state, &comment);
 		ogg_stream_packetin(&codec_priv->stream_state, &code);
-
-		ogg_packet_clear(&code);
-		ogg_packet_clear(&comment);
-		ogg_packet_clear(&codec_id);
 
 		context->encoder_ready++;
 
@@ -297,7 +293,6 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 		while (vorbis_bitrate_flushpacket(&codec_priv->dsp_state, &packet) == 1) {
 			ogg_stream_packetin(&codec_priv->stream_state, &packet);
-			ogg_packet_clear(&packet);
 		}
 	}
 
@@ -498,7 +493,10 @@ static switch_status_t oggshout_vorbis_encoder_open(oggshout_context_t *context,
 {
 	int ret;
 	switch_status_t err;
-	vorbis_codec_priv_t *codec_priv;
+	vorbis_codec_priv_t *codec_priv = NULL;
+	bool ogg_stream_initialized = false;
+	bool vorbis_info_initialized = false;
+	bool vorbis_dsp_state_initialized = false;
 
 	codec_priv = malloc(sizeof (vorbis_codec_priv_t));
 	if (!codec_priv) {
@@ -506,7 +504,12 @@ static switch_status_t oggshout_vorbis_encoder_open(oggshout_context_t *context,
 	}
 
 	context->codec_priv = codec_priv;
+
+	ogg_stream_init(&codec_priv->stream_state, 0);
+	ogg_stream_initialized = true;
+
 	vorbis_info_init(&codec_priv->info);
+	vorbis_info_initialized = true;
 
 	switch (globals.vorbis_mode) {
 	case OGGSHOUT_MODE_QUALITY:
@@ -534,6 +537,7 @@ static switch_status_t oggshout_vorbis_encoder_open(oggshout_context_t *context,
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Vorbis encoder analysis initialization failed\n");
 		goto error;
 	}
+	vorbis_dsp_state_initialized = true;
 
 	err = oggshout_shout_sender_open(context, path);
 	if (err != SWITCH_STATUS_SUCCESS) {
@@ -544,8 +548,12 @@ static switch_status_t oggshout_vorbis_encoder_open(oggshout_context_t *context,
 
 error:
 	if (codec_priv) {
-		vorbis_dsp_clear(&codec_priv->dsp_state);
-		vorbis_info_clear(&codec_priv->info);
+		if (vorbis_dsp_state_initialized)
+			vorbis_dsp_clear(&codec_priv->dsp_state);
+		if (vorbis_info_initialized)
+			vorbis_info_clear(&codec_priv->info);
+		if (ogg_stream_initialized)
+			ogg_stream_clear(&codec_priv->stream_state);
 		free(codec_priv);
 		context->codec_priv = NULL;
 	}
