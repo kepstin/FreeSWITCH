@@ -847,7 +847,7 @@ static switch_status_t shout_file_get_string(switch_file_handle_t *handle, switc
 
 static switch_status_t load_config(void)
 {
-	char *cf = "shout.conf";
+	char *cf = "oggshout.conf";
 	switch_xml_t cfg, xml, settings, param;
 
 	memset(&globals, 0, sizeof(globals));
