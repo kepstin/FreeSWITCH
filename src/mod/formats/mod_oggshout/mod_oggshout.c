@@ -141,7 +141,6 @@ static void oggshout_vorbis_encoder_destroy(oggshout_context_t *context)
 
 			while (vorbis_bitrate_flushpacket(&codec_priv->dsp_state, &packet) == 1) {
 				ogg_stream_packetin(&codec_priv->stream_state, &packet);
-				ogg_packet_clear(&packet);
 			}
 		}
 
