@@ -301,7 +301,7 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 	}
 
 	/* Generate the ogg packets, and send them via libshout */
-	while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
+	while (ogg_stream_flush(&codec_priv->stream_state, &page) > 0) {
 		shout_sync(context->shout);
 		shout_send(context->shout, page.header, page.header_len);
 		shout_send(context->shout, page.body, page.body_len);
@@ -325,6 +325,9 @@ static switch_status_t oggshout_opus_encoder_write(oggshout_context_t *context, 
 static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, void *obj)
 {
 	oggshout_context_t *context = (oggshout_context_t *) obj;
+	int16_t audio[32768] = { 0 };
+	switch_size_t audio_read = 0;
+	switch_status_t ret = 0;
 
 	switch_thread_rwlock_rdlock(context->rwlock);
 
@@ -336,9 +339,6 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 	}
 
 	while (!context->err && context->thread_running) {
-		int16_t audio[9600] = { 0 };
-		switch_size_t audio_read = 0;
-		switch_status_t ret = 0;
 
 		switch_mutex_lock(context->audio_mutex);
 		if (context->audio_buffer) {
@@ -353,8 +353,9 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 		error_check();
 
 		if (!audio_read) {
-			audio_read = sizeof(audio);
-			memset(audio, 0, sizeof(audio));
+			/* Delay until we start getting packets */
+			switch_sleep(20 * 1000); /* 20ms */
+			continue;
 		}
 
 		switch (context->codec) {
