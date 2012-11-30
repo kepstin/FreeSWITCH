@@ -234,9 +234,11 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 	int channels = context->channels;
 	ogg_packet packet = { 0 };
 	ogg_page page = { 0 };
-	
+
 	/* Each sample is two bytes, and we can have 1 or 2 channels */
 	samples = len / sizeof (int16_t) / channels;
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Encoding %d samples in vorbis\n", samples);
 
 	if (context->err) {
 		goto error;
@@ -265,6 +267,7 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 			shout_send(context->shout, page.header, page.header_len);
 			shout_send(context->shout, page.body, page.body_len);
 		}
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Sent vorbis headers to shout\n");
 	}
 
 	/* Copy the samples into the vorbis buffer, converting to float on the way */
@@ -299,6 +302,7 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 	while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
 		shout_send(context->shout, page.header, page.header_len);
 		shout_send(context->shout, page.body, page.body_len);
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Wrote an encoded page to shout\n");
 	}
 
 	return SWITCH_STATUS_SUCCESS;
@@ -341,6 +345,8 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 		}
 		switch_mutex_unlock(context->audio_mutex);
 
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Read %ld bytes from audio buffer\n", audio_read);
+
 		error_check();
 
 		if (!audio_read) {
@@ -381,6 +387,8 @@ static switch_status_t launch_write_stream_thread(oggshout_context_t *context)
 		return SWITCH_STATUS_FALSE;
 	}
 
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Launching stream write thread\n");
+
 	context->thread_running = 1;
 	switch_threadattr_create(&thd_attr, context->memory_pool);
 	switch_threadattr_detach_set(thd_attr, 1);
@@ -408,6 +416,8 @@ static switch_status_t oggshout_shout_sender_open(oggshout_context_t *context, c
 	switch_status_t err = SWITCH_STATUS_GENERR;
 	char *username, *password, *host, *port, *mount;
 	int portno = 0;
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Initializing shout sender\n");
 
 	username = switch_core_strdup(context->handle->memory_pool, path);
 	if (!(password = strchr(username, ':'))) {
@@ -496,6 +506,8 @@ static switch_status_t oggshout_vorbis_encoder_open(oggshout_context_t *context,
 	bool ogg_stream_initialized = false;
 	bool vorbis_info_initialized = false;
 	bool vorbis_dsp_state_initialized = false;
+
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Initializing vorbis encoder\n");
 
 	codec_priv = malloc(sizeof (vorbis_codec_priv_t));
 	if (!codec_priv) {
@@ -640,6 +652,8 @@ static switch_status_t oggshout_file_open(switch_file_handle_t *handle, const ch
 	oggshout_context_t *context;
 	switch_status_t ret = SWITCH_STATUS_GENERR;
 
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "file_open: Opening stream for %s\n", path);
+
 	/* For now, stream reading support is disabled. We only need writing */
 	if (switch_test_flag(handle, SWITCH_FILE_FLAG_READ)) {
 		return SWITCH_STATUS_FALSE;
@@ -766,6 +780,7 @@ static switch_status_t shout_file_write(switch_file_handle_t *handle, void *data
 	if (context->audio_mutex) {
 		switch_mutex_lock(context->audio_mutex);
 		if (context->audio_buffer) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Writing %ld samples to audio buffer\n", nsamples);
 			if (!switch_buffer_write(context->audio_buffer, data, (nsamples * sizeof(int16_t) * handle->channels))) {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Buffer error\n");
 				context->err++;
