@@ -354,7 +354,7 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 
 		if (!audio_read) {
 			/* Delay until we start getting packets */
-			switch_sleep(20 * 1000); /* 20ms */
+			switch_sleep(200 * 1000); /* 200ms */
 			continue;
 		}
 
