@@ -145,9 +145,9 @@ static void oggshout_vorbis_encoder_destroy(oggshout_context_t *context)
 		}
 
 		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
-			shout_sync(context->shout);
 			shout_send(context->shout, page.header, page.header_len);
 			shout_send(context->shout, page.body, page.body_len);
+			shout_sync(context->shout);
 		}
 
 		oggshout_shout_destroy(context);
@@ -265,9 +265,9 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 		/* Generate the ogg packets, and send them via libshout */
 		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
-			shout_sync(context->shout);
 			shout_send(context->shout, page.header, page.header_len);
 			shout_send(context->shout, page.body, page.body_len);
+			shout_sync(context->shout);
 		}
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Sent vorbis headers to shout\n");
 	}
@@ -302,10 +302,10 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 
 	/* Generate the ogg packets, and send them via libshout */
 	while (ogg_stream_flush(&codec_priv->stream_state, &page) > 0) {
-		shout_sync(context->shout);
 		shout_send(context->shout, page.header, page.header_len);
 		shout_send(context->shout, page.body, page.body_len);
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Wrote an encoded page to shout\n");
+		shout_sync(context->shout);
 	}
 
 	return SWITCH_STATUS_SUCCESS;
@@ -354,7 +354,7 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 
 		if (!audio_read) {
 			/* Delay until we start getting packets */
-			switch_sleep(200 * 1000); /* 200ms */
+			switch_sleep(20 * 1000); /* 20ms */
 			continue;
 		}
 
