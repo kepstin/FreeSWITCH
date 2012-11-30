@@ -339,6 +339,8 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 	}
 
 	while (!context->err && context->thread_running) {
+		bool all_zeroes = false;
+		switch_size_t i;
 
 		switch_mutex_lock(context->audio_mutex);
 		if (context->audio_buffer) {
@@ -357,6 +359,15 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 			switch_sleep(20 * 1000); /* 20ms */
 			continue;
 		}
+
+		for (i = 0; i < (audio_read / sizeof (int16_t)); ++i) {
+			if (audio[i] != 0) {
+				all_zeroes = false;
+				break;
+			}
+		}
+		if (all_zeroes)
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Buffer contains only silence!\n");
 
 		switch (context->codec) {
 			case OGGSHOUT_CODEC_VORBIS:
