@@ -113,6 +113,112 @@ struct vorbis_codec_priv {
 
 typedef struct vorbis_codec_priv vorbis_codec_priv_t;
 
+struct opus_codec_priv {
+	OpusEncoder *encoder;
+	ogg_stream_state stream_state;
+	uint8_t *buffer;
+	size_t buffer_len; /* in samples */
+	size_t buffer_fill; /* in samples */
+	int64_t granulepos;
+	int64_t packetno;
+};
+
+typedef struct opus_codec_priv opus_codec_priv_t;
+
+typedef struct {
+	uint8_t channels;
+	uint16_t preskip;
+	uint32_t input_sample_rate;
+	uint16_t gain; /* Must be pre-encoded, but in native endian */
+	uint8_t channel_mapping;
+	uint8_t nb_streams;
+	uint8_t nb_coupled;
+	uint8_t stream_map[255];
+} opus_header;
+
+static uint8_t opus_header_magic[] = { 'O', 'p', 'u', 's', 'H', 'e', 'a', 'd' };
+static uint8_t opus_comment_magic[] = { 'O', 'p', 'u', 's', 'T', 'a', 'g', 's' };
+
+static void write_uint16_le(uint8_t *buffer, uint32_t value) {
+	buffer[0] = value & 0xff;
+	buffer[1] = (value >> 8) & 0xff;
+}
+static void write_uint32_le(uint8_t *buffer, uint32_t value) {
+	buffer[0] = value & 0xff;
+	buffer[1] = (value >> 8) & 0xff;
+	buffer[2] = (value >> 16) & 0xff;
+	buffer[3] = (value >> 24) & 0xff;
+}
+
+uint8_t *opus_header_write(const opus_header *h, size_t *out_len) {
+	size_t packet_size = 19;
+	uint8_t *buffer;
+	
+	if (h->channel_mapping > 0)
+		packet_size += h->nb_streams + h->nb_coupled;
+
+	buffer = malloc(packet_size);
+	if (!buffer)
+		return NULL;
+	*out_len = packet_size;
+
+	memcpy(buffer, opus_header_magic, 8);
+	buffer[8] = 1; /* version */
+	buffer[9] = h->channels;
+	write_uint16_le(&buffer[10], h->preskip);
+	write_uint32_le(&buffer[12], h->input_sample_rate);
+	write_uint16_le(&buffer[16], h->gain);
+	buffer[18] = h->channel_mapping;
+
+	if (h->channel_mapping > 0) {
+		buffer[19] = h->nb_streams;
+		buffer[20] = h->nb_coupled;
+		memcpy(&buffer[21], h->stream_map, h->nb_streams + h->nb_coupled);
+	}
+
+	return buffer;
+}
+uint8_t *opus_comment_write(const vorbis_comment *vc, size_t *out_len) {
+	size_t packet_size = 16;
+	uint32_t vendor_len, comments;
+	uint8_t *buffer, *op;
+	uint32_t i;
+
+	/* The 'vendor' field is null-terminated */
+	vendor_len = strlen(vc->vendor);
+	packet_size += vendor_len;
+
+	comments = vc->comments;
+	for (i = 0; i < comments; i++) {
+		packet_size += 4 + comment_lengths[i];
+	}
+
+	buffer = malloc(packet_size);
+	if (!buffer)
+		return NULL;
+	*out_len = packet_size;
+
+	memcpy(buffer, opus_comment_magic, 8);
+	op = buffer + 8;
+
+	write_uint32_le(op, vendor_len);
+	op += 4;
+	memcpy(op, vc->vendor, vendor_len);
+	op += vendor_len;
+
+	write_uint32_le(op, comments);
+	op += 4;
+
+	for (i = 0; i < comments; i++) {
+		uint32_t comment_len = vc->comment_lengths[i];
+		write_uint32_le(op, comment_len);
+		op += 4;
+		memcpy(op, vc->user_comments[i], comment_len);
+		op += comment_len;
+	}
+
+	return buffer;
+}
 
 static void oggshout_shout_destroy(oggshout_context_t *context)
 {
@@ -171,7 +277,11 @@ static void oggshout_opus_encoder_destroy(oggshout_context_t *context)
 		oggshout_shout_destroy(context);
 	}
 
-	opus_encoder_destroy(codec_priv);
+	if (codec_priv->buffer)
+		free(codec_priv->buffer);
+
+	ogg_stream_clear(&codec_priv->stream_state);
+	opus_encoder_destroy(codec_priv->encoder);
 
 	context->codec_priv = NULL;
 }
@@ -226,7 +336,6 @@ static inline void free_context(oggshout_context_t *context)
 static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context, void *data, size_t len)
 {
 	vorbis_codec_priv_t *codec_priv = context->codec_priv;
-	vorbis_comment vc;
 	vorbis_block block;
 	float **vorbis_buffers;
 	int samples;
@@ -244,6 +353,7 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 	}
 
 	if (!context->encoder_ready) {
+		vorbis_comment vc;
 		ogg_packet codec_id = { 0 };
 		ogg_packet comment = { 0 };
 		ogg_packet code = { 0 };
@@ -265,7 +375,6 @@ static switch_status_t oggshout_vorbis_encoder_write(oggshout_context_t *context
 		while (ogg_stream_pageout(&codec_priv->stream_state, &page) > 0) {
 			shout_send(context->shout, page.header, page.header_len);
 			shout_send(context->shout, page.body, page.body_len);
-			shout_sync(context->shout);
 		}
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Sent vorbis headers to shout\n");
 	}
@@ -313,8 +422,100 @@ error:
 
 static switch_status_t oggshout_opus_encoder_write(oggshout_context_t *context, void *data, size_t len)
 {
-	/* TODO */
-	return SWITCH_STATUS_FALSE;
+	opus_codec_priv_t *codec_priv = context->codec_priv;
+	ogg_page page = { 0 };
+	int samples;
+	int16_t *sample = data;
+	int input_sample = 0;
+	int channels = context->channels;
+	int ret;
+
+	samples = len / sizeof (int16_t) / channels;
+
+	if (!context->encoder_ready) {
+		opus_header h = { 0 };
+		vorbis_comment vc;
+		ogg_packet packet = { 0 };
+		size_t written;
+		opus_int32 lookahead;
+
+		/* OpusHead packet */
+		h.channels = channels;
+		opus_encoder_ctl(codec_priv->encoder, OPUS_GET_LOOKAHEAD(&lookahead));
+		h.preskip = lookahead;
+		h.input_sample_rate = context->samplerate;
+		h.gain = 0;
+		h.channel_mapping = 0;
+
+		packet.b_o_s = 1;
+		packet.e_o_s = 0;
+		packet.granulepos = 0;
+		packet.packetno = codec_priv->packetno++;
+		packet.packet = opus_header_write(&h, &written);
+		packet.bytes = written;
+
+		ogg_stream_packetin(&codec_priv->stream_state, &packet);
+		free(packet.packet);
+
+		/* OpusTags packet */
+		vorbis_comment_init(&vc);
+		vc.vendor = "Freeswitch mod_oggshout";
+
+		packet.b_o_s = 0;
+		packet.packetno = codec_priv->packetno++;
+		packet.packet = opus_comments_write(&vc, &written);
+		packet.bytes = written;
+
+		ogg_stream_packetin(&codec_priv->stream_state, &packet);
+		free(packet.packet);
+
+		while (ogg_stream_flush(&codec_priv->stream_state, &page) > 0) {
+			shout_send(context->shout, page.header, page.header_len);
+			shout_send(context->shout, page.body, page.body_len);
+		}
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Sent opus headers to shout\n");
+	}
+
+	while (input_sample < samples) {
+		int space = codec_priv->buffer_len - codec_priv->buffer_fill;
+		int remaining_input = samples - input_sample;
+		int samples_to_copy = space > remaining_input ? remaining_input : space;
+
+		if (samples_to_copy > 0)
+			memcpy(&codec_priv->buffer[codec_priv->buffer_fill * channels], &sample[input_sample * channels], samples_to_copy * channels);
+		input_sample += samples_to_copy;
+		codec_priv->buffer_fill += samples_to_copy;
+
+		if (codec_priv->buffer_fill == codec_priv->buffer_len) {
+			uint8_t data[4000]; /* 4000 bytes is recommended in the libopus docs */
+			ogg_packet packet = { 0 };
+			ogg_page page;
+
+			ret = opus_encode(codec_priv->encoder, &codec_priv->buffer, codec_priv->buffer_len, data, 4000);
+			if (!(ret > 0))
+				return SWITCH_STATUS_GENERR;
+
+			codec_priv->granulepos += codec_priv->buffer_len;
+
+			packet.packet = data;
+			packet.bytes = ret;
+			packet.b_o_s = 0;
+			packet.e_o_s = 0;
+			packet.granulepos = codec_priv->granulepos;
+			packet.packetno = codec_priv->packetno++;
+
+			ogg_stream_packetin(&codec_priv->stream_state, &packet);
+
+			while (ogg_stream_flush(&codec_priv->stream_state, &page) > 0) {
+				shout_send(context->shout, page.header, page.header_len);
+				shout_send(context->shout, page.body, page.body_len);
+				shout_sync(context->shout);
+			}
+		}
+	}
+
+	return SWITCH_STATUS_SUCCESS;
 }
 
 #define error_check() if (context->err) goto error;
@@ -355,15 +556,6 @@ static void *SWITCH_THREAD_FUNC write_stream_thread(switch_thread_t *thread, voi
 			switch_sleep(20 * 1000); /* 20ms */
 			continue;
 		}
-
-		for (i = 0; i < (audio_read / sizeof (int16_t)); ++i) {
-			if (audio[i] != 0) {
-				all_zeroes = false;
-				break;
-			}
-		}
-		if (all_zeroes)
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Buffer contains only silence!\n");
 
 		switch (context->codec) {
 			case OGGSHOUT_CODEC_VORBIS:
@@ -597,26 +789,52 @@ static switch_status_t oggshout_opus_encoder_open(oggshout_context_t *context, c
 {
 	int opus_error;
 	switch_status_t err;
-	OpusEncoder *codec_priv;
+	opus_codec_priv *codec_priv = NULL;
+	OpusEncoder *encoder = NULL;
+	bool ogg_stream_initialized = false;
+	uint32_t buffer_samples;
 
-	codec_priv = opus_encoder_create(context->samplerate, context->channels, globals.opus_application, &opus_error);
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Initializing opus encoder\n");
+
+	codec_priv = calloc(1, sizeof (opus_codec_priv));
+	if (!codec_priv) {
+		return SWITCH_STATUS_MEMERR;
+	}
+	context->codec_priv = codec_priv;
+
+	ogg_stream_init(&codec_priv->stream_state, 0);
+	ogg_stream_initialized = true;
+
+	encoder = opus_encoder_create(context->samplerate, context->channels, globals.opus_application, &opus_error);
 	if (opus_error != OPUS_OK) {
 		goto error;
 	}
+	codec_priv->encoder = encoder;
 
 	switch (globals.opus_mode) {
 	case OGGSHOUT_MODE_VBR:
-		opus_encoder_ctl(codec_priv, OPUS_SET_VBR(1));
-		opus_encoder_ctl(codec_priv, OPUS_SET_VBR_CONSTRAINT(0));
-		opus_encoder_ctl(codec_priv, OPUS_SET_BITRATE(globals.opus_bitrate));
+		opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
+		opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(0));
+		opus_encoder_ctl(encoder, OPUS_SET_BITRATE(globals.opus_bitrate));
 		break;
 	case OGGSHOUT_MODE_MANAGED:
-		opus_encoder_ctl(codec_priv, OPUS_SET_VBR(1));
-		opus_encoder_ctl(codec_priv, OPUS_SET_VBR_CONSTRAINT(1));
-		opus_encoder_ctl(codec_priv, OPUS_SET_BITRATE(globals.opus_bitrate));
+		opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
+		opus_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(1));
+		opus_encoder_ctl(encoder, OPUS_SET_BITRATE(globals.opus_bitrate));
 		break;
 	default:
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Opus encoding mode not set\n");
+		goto error;
+	}
+
+	/*
+	 * Determine the input buffer size needed for the opus encoder.
+	 * I'm currently assuming the use of 20ms frames.
+	 * 960 is 20ms at 48000, which has to be adjusted based on the input sample rate
+	 */
+	codec_priv->buffer_len = 960 / (48000 / context->samplerate);
+	codec_priv->buffer = malloc(context->channels * codec_priv->buffer_len * sizeof (int16_t));
+	if (!codec_priv->buffer) {
 		goto error;
 	}
 
@@ -630,8 +848,15 @@ static switch_status_t oggshout_opus_encoder_open(oggshout_context_t *context, c
 	return SWITCH_STATUS_SUCCESS;
 
 error:
+	if (encoder) {
+		opus_encoder_destroy(encoder);
+	}
 	if (codec_priv) {
-		opus_encoder_destroy(codec_priv);
+		if (codec_priv->buffer)
+			free(codec_priv->buffer);
+		if (ogg_stream_initialized)
+			ogg_stream_clear(&codec_priv->stream_state);
+		free(codec_priv);
 		context->codec_priv = NULL;
 	}
 
