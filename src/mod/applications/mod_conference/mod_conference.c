@@ -3324,7 +3324,7 @@ static void *SWITCH_THREAD_FUNC conference_loop_input(switch_thread_t *thread, v
 
 		/* skip frames that are not actual media or when we are muted or silent */
 		if ((switch_test_flag(member, MFLAG_TALKING) || member->energy_level == 0 || switch_test_flag(member->conference, CFLAG_AUDIO_ALWAYS)) 
-			&& switch_test_flag(member, MFLAG_CAN_SPEAK) &&	!switch_test_flag(member->conference, CFLAG_WAIT_MOD) && member->conference->count > 1) {
+			&& switch_test_flag(member, MFLAG_CAN_SPEAK) &&	!switch_test_flag(member->conference, CFLAG_WAIT_MOD) && (member->conference->count > 1 || member->conference->is_recording)) {
 			switch_audio_resampler_t *read_resampler = member->read_resampler;
 			void *data;
 			uint32_t datalen;
